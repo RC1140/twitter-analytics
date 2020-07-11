@@ -34,7 +34,6 @@ func loadExistingCounts(db *bolt.DB, activeBucket string) map[string]uint16 {
 		c := b.Cursor()
 
 		for k, v := c.First(); k != nil; k, v = c.Next() {
-			fmt.Printf("key=%s, value=%s\n", k, v)
 			c := binary.BigEndian.Uint16(v)
 			userCounts[string(k)] = c
 		}
@@ -56,6 +55,40 @@ func updateCount(db *bolt.DB, count uint16, user, activeBucket string) {
 		return err
 	})
 
+}
+
+func putLastIndexedTweet(db *bolt.DB, tweetID int64) {
+	db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucketIfNotExists([]byte("lastindexedtweet"))
+		if err != nil {
+			return err
+		}
+		id := make([]byte, 8)
+		binary.BigEndian.PutUint64(id, uint64(tweetID))
+
+		err = b.Put([]byte("id"), id)
+		fmt.Println("Index saved")
+		if err != nil {
+			return fmt.Errorf("Error updating index: %s", err)
+		}
+		return err
+	})
+
+}
+
+func getLastIndexedTweeID(db *bolt.DB) int64 {
+	var lastIndexedTweet int64
+	db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("lastindexedtweet"))
+
+		if b != nil {
+			rawID := b.Get([]byte("id"))
+			c := binary.BigEndian.Uint64(rawID)
+			lastIndexedTweet = int64(c)
+		}
+		return nil
+	})
+	return lastIndexedTweet
 }
 
 func main() {
@@ -83,51 +116,38 @@ func main() {
 	httpClient := config.Client(oauth1.NoContext, token)
 
 	m := loadExistingCounts(db, activeBucket)
-	for user, count := range m {
-		fmt.Printf("%s - %d \n", user, count)
-	}
 
 	client := twitter.NewClient(httpClient)
+	var lastIndexedTweet int64 = 0
+
+	lastIndexedTweet = getLastIndexedTweeID(db)
+
+	fmt.Printf("Last indexed tweet %d \n", lastIndexedTweet)
 
 	tweets, _, err := client.Timelines.HomeTimeline(&twitter.HomeTimelineParams{
-		Count: 200,
+		Count:   200,
+		SinceID: lastIndexedTweet,
 	})
 	if err != nil {
 		fmt.Println(err)
 	}
 
+	fmt.Printf("Found %d tweets since last run", len(tweets))
+
 	if tweets != nil {
 		for _, x := range tweets {
-			fmt.Println(fmt.Sprintf("-> %s", x.User.ScreenName))
-			fmt.Println(fmt.Sprintf("** %s", x.Text))
+			// fmt.Println(fmt.Sprintf("-> %s", x.User.ScreenName))
+			// fmt.Println(fmt.Sprintf("** %s", x.Text))
 			m[x.User.ScreenName]++
+			if x.ID > lastIndexedTweet {
+				lastIndexedTweet = x.ID
+			}
+
 		}
 	}
 
+	putLastIndexedTweet(db, lastIndexedTweet)
 	for user, count := range m {
 		updateCount(db, count, user, activeBucket)
 	}
-	// if resp != nil {
-	// 	fmt.Println(resp)
-	// }
-	// demux := twitter.NewSwitchDemux()
-	// demux.Tweet = func(tweet *twitter.Tweet) {
-	// 	fmt.Println(tweet.Text)
-	// }
-	// fmt.Println("Starting Stream...")
-	// filterParams := &twitter.StreamFilterParams{
-	// 	Track:         []string{"cat"},
-	// 	StallWarnings: twitter.Bool(true),
-	// }
-	// stream, err := client.Streams.Filter(filterParams)
-	// if err != nil {
-	// 	log.Fatal(err)
-	// }
-	// go demux.HandleChan(stream.Messages)
-	// ch := make(chan os.Signal)
-	// signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
-	// log.Println(<-ch)
-
-	// fmt.Println("Stopping Stream...")
-	// stream.Stop()
 }
